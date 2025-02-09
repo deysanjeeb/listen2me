@@ -9,6 +9,76 @@ from typing import Optional
 import warnings
 import sounddevice as sd
 
+from pynput import keyboard
+import threading
+import time
+
+
+class CapsLockListener:
+    def __init__(self, callback, combo_keys=None):
+        """
+        Initialize the Caps Lock listener
+
+        Args:
+            callback (function): Function to call when Caps Lock is pressed
+            combo_keys (list): Optional additional keys required with Caps Lock
+        """
+        self.callback = callback
+        self.combo_keys = set(combo_keys) if combo_keys else set()
+        self.current_keys = set()
+        self.listener = None
+        self.running = False
+        self.caps_lock_pressed = False
+
+    def on_press(self, key):
+        """Handle key press events"""
+        try:
+            # Convert key to string representation
+            key_str = key.char
+        except AttributeError:
+            key_str = str(key).replace("Key.", "").lower()
+
+        self.current_keys.add(key_str)
+
+        # Check specifically for Caps Lock
+        if key_str == "caps_lock":
+            self.caps_lock_pressed = True
+
+            # If no combo keys are required, trigger immediately
+            if not self.combo_keys:
+                self.callback()
+            # If combo keys are required, check if they're all pressed
+            elif all(k in self.current_keys for k in self.combo_keys):
+                self.callback()
+
+    def on_release(self, key):
+        """Handle key release events"""
+        try:
+            key_str = key.char
+        except AttributeError:
+            key_str = str(key).replace("Key.", "").lower()
+
+        if key_str == "caps_lock":
+            self.caps_lock_pressed = False
+
+        if key_str in self.current_keys:
+            self.current_keys.remove(key_str)
+
+    def start(self):
+        """Start listening for Caps Lock"""
+        self.running = True
+        self.listener = keyboard.Listener(
+            on_press=self.on_press, on_release=self.on_release
+        )
+        self.listener.start()
+
+    def stop(self):
+        """Stop listening"""
+        self.running = False
+        if self.listener:
+            self.listener.stop()
+            self.listener = None
+
 
 class AudioTranscriber:
     def __init__(
@@ -215,7 +285,27 @@ def list_audio_devices():
 
 
 def main():
-    """Example usage"""
+    def on_caps_lock():
+        print("Caps Lock triggered!")
+
+    # Create listener for just Caps Lock
+    # listener = CapsLockListener(on_caps_lock)
+
+    # Or create listener for Caps Lock + additional keys
+    listener = CapsLockListener(on_caps_lock)  # Caps Lock + Ctrl
+
+    try:
+        print("Listening for Caps Lock...")
+        print("Press ctrl + c to exit")
+        listener.start()
+
+        while listener.running:
+            time.sleep(0.1)
+
+    except KeyboardInterrupt:
+        print("\nStopping listener...")
+        listener.stop()
+
     try:
         # Show available devices
         list_audio_devices()
