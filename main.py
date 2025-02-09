@@ -12,7 +12,12 @@ import sounddevice as sd
 
 class AudioTranscriber:
     def __init__(
-        self, model_type: str = "base", chunk_size: int = 1024, channels: int = 1
+        self,
+        model_type: str = "base",
+        chunk_size: int = 1024,
+        channels: int = 1,
+        noise_threshold: float = 0.01,  # Added noise threshold parameter
+        calibration_duration: float = 1.0,  # Duration to calibrate noise level
     ):
         """
         Initialize the audio transcriber
@@ -21,12 +26,17 @@ class AudioTranscriber:
             model_type: Whisper model type ('tiny', 'base', 'small', 'medium', 'large')
             chunk_size: Size of audio chunks to process
             channels: Number of audio channels (1 for mono, 2 for stereo)
+            noise_threshold: Minimum amplitude to consider as speech
+            calibration_duration: Duration in seconds to calibrate noise level
         """
         self.model = whisper.load_model(model_type)
         self.chunk_size = chunk_size
         self.channels = channels
+        self.noise_threshold = noise_threshold
+        self.calibration_duration = calibration_duration
         self.audio_queue = queue.Queue()
         self.is_running = False
+        self.ambient_noise_level = None
 
         # Get default device info
         device_info = sd.query_devices(kind="input")
@@ -34,8 +44,46 @@ class AudioTranscriber:
         print(f"Using device: {device_info['name']}")
         print(f"Sample rate: {self.sample_rate}")
 
+    def calibrate_noise(self) -> None:
+        """Calibrate the ambient noise level"""
+        print("Calibrating ambient noise level... Please remain quiet.")
+
+        calibration_samples = []
+        duration = 0
+
+        def callback(indata, frames, time, status):
+            if status:
+                print(status)
+            calibration_samples.append(np.abs(indata).mean())
+
+        with sd.InputStream(
+            channels=self.channels,
+            samplerate=self.sample_rate,
+            blocksize=self.chunk_size,
+            callback=callback,
+        ):
+            time.sleep(self.calibration_duration)
+
+        # Calculate ambient noise level (mean + 2 standard deviations)
+        samples = np.array(calibration_samples)
+        self.ambient_noise_level = np.mean(samples) + 2 * np.std(samples)
+        print(f"Ambient noise level calibrated: {self.ambient_noise_level:.6f}")
+
+    def is_speech(self, audio_chunk: np.ndarray) -> bool:
+        """
+        Determine if audio chunk contains speech
+        """
+        # Calculate average amplitude of the chunk
+        amplitude = np.abs(audio_chunk).mean()
+
+        # Compare with ambient noise level
+        return amplitude > (self.ambient_noise_level * (1 + self.noise_threshold))
+
     def start_recording(self) -> None:
         """Start recording from microphone"""
+        # Calibrate noise level first
+        self.calibrate_noise()
+
         self.is_running = True
 
         def callback(indata, frames, time, status):
@@ -63,6 +111,8 @@ class AudioTranscriber:
     def _process_audio(self) -> None:
         """Process audio chunks and transcribe"""
         buffer = np.array([], dtype=np.float32)
+        silence_counter = 0
+        is_speaking = False
 
         while self.is_running:
             try:
@@ -73,39 +123,55 @@ class AudioTranscriber:
                 if audio_chunk.ndim > 1:
                     audio_chunk = audio_chunk.flatten()
 
-                buffer = np.append(buffer, audio_chunk)
+                # Check if chunk contains speech
+                if self.is_speech(audio_chunk):
+                    silence_counter = 0
+                    is_speaking = True
+                    buffer = np.append(buffer, audio_chunk)
+                else:
+                    silence_counter += 1
+                    # Add a small amount of silence to the buffer to maintain context
+                    if (
+                        is_speaking and silence_counter < 10
+                    ):  # About 0.2 seconds of silence
+                        buffer = np.append(buffer, audio_chunk)
 
-                # Process when buffer reaches 2 seconds
-                if len(buffer) >= self.sample_rate * 2:
-                    # Normalize audio
-                    audio_normalized = (
-                        buffer / np.max(np.abs(buffer))
-                        if np.max(np.abs(buffer)) > 0
-                        else buffer
-                    )
-
-                    # Resample to 16kHz for Whisper if needed
-                    if self.sample_rate != 16000:
-                        audio_resampled = self._resample(
-                            audio_normalized, self.sample_rate, 16000
+                # Process when we have enough speech or too much silence
+                if len(buffer) >= self.sample_rate * 2 or (
+                    is_speaking and silence_counter >= 10
+                ):
+                    if len(buffer) > 0:
+                        # Normalize audio
+                        audio_normalized = (
+                            buffer / np.max(np.abs(buffer))
+                            if np.max(np.abs(buffer)) > 0
+                            else buffer
                         )
-                    else:
-                        audio_resampled = audio_normalized
 
-                    # Transcribe
-                    try:
-                        result = self.model.transcribe(
-                            audio_resampled, language="en", fp16=False
-                        )
+                        # Resample to 16kHz for Whisper if needed
+                        if self.sample_rate != 16000:
+                            audio_resampled = self._resample(
+                                audio_normalized, self.sample_rate, 16000
+                            )
+                        else:
+                            audio_resampled = audio_normalized
 
-                        if result["text"].strip():
-                            print(f"Transcription: {result['text'].strip()}")
+                        # Transcribe
+                        try:
+                            result = self.model.transcribe(
+                                audio_resampled, language="en", fp16=False
+                            )
 
-                    except Exception as e:
-                        print(f"Transcription error: {e}")
+                            if result["text"].strip():
+                                print(f"Transcription: {result['text'].strip()}")
 
-                    # Reset buffer
+                        except Exception as e:
+                            print(f"Transcription error: {e}")
+
+                    # Reset buffer and speaking state
                     buffer = np.array([], dtype=np.float32)
+                    is_speaking = False
+                    silence_counter = 0
 
             except queue.Empty:
                 continue
@@ -154,7 +220,13 @@ def main():
         # Show available devices
         list_audio_devices()
 
-        transcriber = AudioTranscriber(model_type="base", chunk_size=1024, channels=1)
+        transcriber = AudioTranscriber(
+            model_type="small",
+            chunk_size=1024,
+            channels=1,
+            noise_threshold=0.01,  # Adjust this value based on your environment
+            calibration_duration=2.0,
+        )
 
         transcriber.start_recording()
 
