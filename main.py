@@ -88,8 +88,8 @@ class AudioTranscriber:
         model_type: str = "base",
         chunk_size: int = 1024,
         channels: int = 1,
-        noise_threshold: float = 0.01,  # Added noise threshold parameter
-        calibration_duration: float = 1.0,  # Duration to calibrate noise level
+        noise_threshold: float = 0.01,
+        calibration_duration: float = 1.0,
     ):
         """
         Initialize the audio transcriber
@@ -109,6 +109,7 @@ class AudioTranscriber:
         self.audio_queue = queue.Queue()
         self.is_running = False
         self.ambient_noise_level = None
+        self.complete_audio_buffer = []
 
         # Get default device info
         device_info = sd.query_devices(kind="input")
@@ -136,9 +137,7 @@ class AudioTranscriber:
         ):
             time.sleep(self.calibration_duration)
 
-        # Calculate ambient noise level (mean + 2 standard deviations)
         samples = np.array(calibration_samples)
-        # self.ambient_noise_level = np.mean(samples) + 2 * np.std(samples)
         self.ambient_noise_level = 0.002
         print(f"Ambient noise level calibrated: {self.ambient_noise_level:.6f}")
 
@@ -146,14 +145,14 @@ class AudioTranscriber:
         """
         Determine if audio chunk contains speech
         """
-        # Calculate average amplitude of the chunk
         amplitude = np.abs(audio_chunk).mean()
-
-        # Compare with ambient noise level
         return amplitude > (self.ambient_noise_level * (1 + self.noise_threshold))
 
     def start_recording(self) -> None:
         """Start recording from microphone"""
+        # Reset the audio buffer
+        self.complete_audio_buffer = []
+
         # Calibrate noise level first
         self.calibrate_noise()
 
@@ -163,7 +162,9 @@ class AudioTranscriber:
             """Callback for sounddevice"""
             if status:
                 print(status)
-            self.audio_queue.put(indata.copy())
+            # Only store chunks that contain speech
+            if self.is_speech(indata):
+                self.complete_audio_buffer.append(indata.copy())
 
         # Start the recording stream
         self.stream = sd.InputStream(
@@ -174,83 +175,7 @@ class AudioTranscriber:
         )
 
         self.stream.start()
-
-        # Start processing thread
-        self.process_thread = threading.Thread(target=self._process_audio)
-        self.process_thread.start()
-
         print("Started recording... Press Ctrl+C to stop")
-
-    def _process_audio(self) -> None:
-        """Process audio chunks and transcribe"""
-        buffer = np.array([], dtype=np.float32)
-        silence_counter = 0
-        is_speaking = False
-
-        while self.is_running:
-            try:
-                # Get audio chunk from queue
-                audio_chunk = self.audio_queue.get(timeout=1)
-
-                # Flatten if stereo
-                if audio_chunk.ndim > 1:
-                    audio_chunk = audio_chunk.flatten()
-
-                # Check if chunk contains speech
-                if self.is_speech(audio_chunk):
-                    silence_counter = 0
-                    is_speaking = True
-                    buffer = np.append(buffer, audio_chunk)
-                else:
-                    silence_counter += 1
-                    # Add a small amount of silence to the buffer to maintain context
-                    if (
-                        is_speaking and silence_counter < 10
-                    ):  # About 0.2 seconds of silence
-                        buffer = np.append(buffer, audio_chunk)
-
-                # Process when we have enough speech or too much silence
-                if len(buffer) >= self.sample_rate * 2 or (
-                    is_speaking and silence_counter >= 10
-                ):
-                    if len(buffer) > 0:
-                        # Normalize audio
-                        audio_normalized = (
-                            buffer / np.max(np.abs(buffer))
-                            if np.max(np.abs(buffer)) > 0
-                            else buffer
-                        )
-
-                        # Resample to 16kHz for Whisper if needed
-                        if self.sample_rate != 16000:
-                            audio_resampled = self._resample(
-                                audio_normalized, self.sample_rate, 16000
-                            )
-                        else:
-                            audio_resampled = audio_normalized
-
-                        # Transcribe
-                        try:
-                            result = self.model.transcribe(
-                                audio_resampled, language="en", fp16=False
-                            )
-
-                            if result["text"].strip():
-                                print(f"Transcription: {result['text'].strip()}")
-
-                        except Exception as e:
-                            print(f"Transcription error: {e}")
-
-                    # Reset buffer and speaking state
-                    buffer = np.array([], dtype=np.float32)
-                    is_speaking = False
-                    silence_counter = 0
-
-            except queue.Empty:
-                continue
-            except Exception as e:
-                print(f"Processing error: {e}")
-                break
 
     def _resample(self, audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
         """Resample audio to target sample rate"""
@@ -260,18 +185,50 @@ class AudioTranscriber:
         target_length = int(duration * target_sr)
         return signal.resample(audio, target_length)
 
-    def stop_recording(self) -> None:
-        """Stop recording and clean up"""
+    def stop_recording(self) -> str:
+        """Stop recording, process the complete audio, and return the transcription"""
         self.is_running = False
 
         if hasattr(self, "stream"):
             self.stream.stop()
             self.stream.close()
 
-        if hasattr(self, "process_thread"):
-            self.process_thread.join()
+        print("\nProcessing complete recording...")
 
-        print("\nStopped recording")
+        # Combine all audio chunks
+        if not self.complete_audio_buffer:
+            print("No speech detected during recording")
+            return ""
+
+        # Concatenate all audio chunks
+        complete_audio = np.concatenate(self.complete_audio_buffer)
+
+        # Flatten if stereo
+        if complete_audio.ndim > 1:
+            complete_audio = complete_audio.flatten()
+
+        # Normalize audio
+        audio_normalized = (
+            complete_audio / np.max(np.abs(complete_audio))
+            if np.max(np.abs(complete_audio)) > 0
+            else complete_audio
+        )
+
+        # Resample to 16kHz for Whisper if needed
+        if self.sample_rate != 16000:
+            audio_resampled = self._resample(audio_normalized, self.sample_rate, 16000)
+        else:
+            audio_resampled = audio_normalized
+
+        # Transcribe
+        try:
+            result = self.model.transcribe(audio_resampled, language="en", fp16=False)
+            transcription = result["text"].strip()
+            print(f"Complete Transcription: {transcription}")
+            return transcription
+        except Exception as e:
+            print(f"Transcription error: {e}")
+            return ""
 
 
 def list_audio_devices():
