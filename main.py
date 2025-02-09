@@ -15,7 +15,7 @@ import time
 
 
 class CapsLockListener:
-    def __init__(self, callback, combo_keys=None):
+    def __init__(self, callback_press, callback_release, combo_keys=None):
         """
         Initialize the Caps Lock listener
 
@@ -23,7 +23,8 @@ class CapsLockListener:
             callback (function): Function to call when Caps Lock is pressed
             combo_keys (list): Optional additional keys required with Caps Lock
         """
-        self.callback = callback
+        self.callback_press = callback_press
+        self.callback_release = callback_release
         self.combo_keys = set(combo_keys) if combo_keys else set()
         self.current_keys = set()
         self.listener = None
@@ -46,10 +47,10 @@ class CapsLockListener:
 
             # If no combo keys are required, trigger immediately
             if not self.combo_keys:
-                self.callback()
+                self.callback_press()
             # If combo keys are required, check if they're all pressed
             elif all(k in self.current_keys for k in self.combo_keys):
-                self.callback()
+                self.callback_press()
 
     def on_release(self, key):
         """Handle key release events"""
@@ -60,6 +61,7 @@ class CapsLockListener:
 
         if key_str == "caps_lock":
             self.caps_lock_pressed = False
+            self.callback_release()
 
         if key_str in self.current_keys:
             self.current_keys.remove(key_str)
@@ -136,7 +138,8 @@ class AudioTranscriber:
 
         # Calculate ambient noise level (mean + 2 standard deviations)
         samples = np.array(calibration_samples)
-        self.ambient_noise_level = np.mean(samples) + 2 * np.std(samples)
+        # self.ambient_noise_level = np.mean(samples) + 2 * np.std(samples)
+        self.ambient_noise_level = 0.002
         print(f"Ambient noise level calibrated: {self.ambient_noise_level:.6f}")
 
     def is_speech(self, audio_chunk: np.ndarray) -> bool:
@@ -285,14 +288,25 @@ def list_audio_devices():
 
 
 def main():
+    list_audio_devices()
+
+    transcriber = AudioTranscriber(
+        model_type="small",
+        chunk_size=1024,
+        channels=1,
+        noise_threshold=0.02,  # Adjust this value based on your environment
+        calibration_duration=1.0,
+    )
+
     def on_caps_lock():
-        print("Caps Lock triggered!")
+        transcriber.start_recording()
 
-    # Create listener for just Caps Lock
-    # listener = CapsLockListener(on_caps_lock)
+    def off_caps_lock():
+        transcriber.stop_recording()
 
-    # Or create listener for Caps Lock + additional keys
-    listener = CapsLockListener(on_caps_lock)  # Caps Lock + Ctrl
+    listener = CapsLockListener(
+        callback_press=on_caps_lock, callback_release=off_caps_lock
+    )
 
     try:
         print("Listening for Caps Lock...")
@@ -306,29 +320,20 @@ def main():
         print("\nStopping listener...")
         listener.stop()
 
-    try:
-        # Show available devices
-        list_audio_devices()
+    # try:
+    #     # Show available devices
 
-        transcriber = AudioTranscriber(
-            model_type="small",
-            chunk_size=1024,
-            channels=1,
-            noise_threshold=0.01,  # Adjust this value based on your environment
-            calibration_duration=2.0,
-        )
+    #     transcriber.start_recording()
 
-        transcriber.start_recording()
+    #     # Keep running until Ctrl+C
+    #     try:
+    #         while True:
+    #             time.sleep(0.1)
+    #     except KeyboardInterrupt:
+    #         transcriber.stop_recording()
 
-        # Keep running until Ctrl+C
-        try:
-            while True:
-                time.sleep(0.1)
-        except KeyboardInterrupt:
-            transcriber.stop_recording()
-
-    except Exception as e:
-        print(f"Error: {e}")
+    # except Exception as e:
+    #     print(f"Error: {e}")
 
 
 if __name__ == "__main__":
