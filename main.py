@@ -1,5 +1,7 @@
-import pyaudio
-import wave
+import os
+
+# import pyaudio
+# import wave
 import numpy as np
 import whisper
 import threading
@@ -8,10 +10,15 @@ import time
 from typing import Optional
 import warnings
 import sounddevice as sd
-
+import google.generativeai as genai
+from dotenv import load_dotenv
 from pynput import keyboard
 import threading
 import time
+
+load_dotenv()
+
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 
 class CapsLockListener:
@@ -244,8 +251,22 @@ def list_audio_devices():
     print("-" * 50)
 
 
+generation_config = {
+    "temperature": 1,
+    "top_p": 0.95,
+    "top_k": 64,
+    "max_output_tokens": 8192,
+    "response_mime_type": "text/plain",
+}
+
+model = genai.GenerativeModel(
+    model_name="gemini-2.0-flash-lite-preview-02-05",
+    generation_config=generation_config,
+)
+
+
 def main():
-    list_audio_devices()
+    # list_audio_devices()
 
     transcriber = AudioTranscriber(
         model_type="small",
@@ -255,11 +276,20 @@ def main():
         calibration_duration=1.0,
     )
 
+    chat_session = model.start_chat()
+
     def on_caps_lock():
         transcriber.start_recording()
 
     def off_caps_lock():
-        transcriber.stop_recording()
+        transcription = transcriber.stop_recording()
+        if transcription is not None:
+            response = model.generate_content(
+                [
+                    transcription,
+                ]
+            )
+            print(response.text)
 
     listener = CapsLockListener(
         callback_press=on_caps_lock, callback_release=off_caps_lock
