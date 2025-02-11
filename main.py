@@ -283,13 +283,15 @@ def main():
 
     def off_caps_lock():
         transcription = transcriber.stop_recording()
-        if transcription is not None:
+        if len(transcription) != 0:
             response = model.generate_content(
                 [
                     transcription,
                 ]
             )
             print(response.text)
+        else:
+            print("False Alarm!")
 
     listener = CapsLockListener(
         callback_press=on_caps_lock, callback_release=off_caps_lock
