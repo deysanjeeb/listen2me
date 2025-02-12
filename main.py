@@ -125,26 +125,26 @@ class AudioTranscriber:
         print(f"Sample rate: {self.sample_rate}")
 
     def calibrate_noise(self) -> None:
-        """Calibrate the ambient noise level"""
-        print("Calibrating ambient noise level... Please remain quiet.")
+        # """Calibrate the ambient noise level"""
+        # print("Calibrating ambient noise level... Please remain quiet.")
 
-        calibration_samples = []
-        duration = 0
+        # calibration_samples = []
+        # duration = 0
 
-        def callback(indata, frames, time, status):
-            if status:
-                print(status)
-            calibration_samples.append(np.abs(indata).mean())
+        # def callback(indata, frames, time, status):
+        #     if status:
+        #         print(status)
+        #     calibration_samples.append(np.abs(indata).mean())
 
-        with sd.InputStream(
-            channels=self.channels,
-            samplerate=self.sample_rate,
-            blocksize=self.chunk_size,
-            callback=callback,
-        ):
-            time.sleep(self.calibration_duration)
+        # with sd.InputStream(
+        #     channels=self.channels,
+        #     samplerate=self.sample_rate,
+        #     blocksize=self.chunk_size,
+        #     callback=callback,
+        # ):
+        #     time.sleep(self.calibration_duration)
 
-        samples = np.array(calibration_samples)
+        # samples = np.array(calibration_samples)
         self.ambient_noise_level = 0.002
         print(f"Ambient noise level calibrated: {self.ambient_noise_level:.6f}")
 
