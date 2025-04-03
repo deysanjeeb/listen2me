@@ -1,7 +1,4 @@
 import os
-
-# import pyaudio
-# import wave
 import numpy as np
 import whisper
 import threading
@@ -15,6 +12,7 @@ from dotenv import load_dotenv
 from pynput import keyboard
 import threading
 import time
+import pyautogui
 
 load_dotenv()
 
@@ -22,54 +20,82 @@ genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 
 class CapsLockListener:
-    def __init__(self, callback_press, callback_release, combo_keys=None):
+    def __init__(
+        self, callback_press, callback_release, callback_combo, combo_keys=None
+    ):
         """
-        Initialize the Caps Lock listener
+        Initialize the Caps Lock listener with various callbacks for different key actions
 
         Args:
-            callback (function): Function to call when Caps Lock is pressed
-            combo_keys (list): Optional additional keys required with Caps Lock
+            callback_press (function): Function to call when Caps Lock is pressed alone
+            callback_release (function): Function to call when Caps Lock is released (no combo)
+            callback_combo (function): Function to call when Caps Lock + combo keys are released
+            combo_keys (list): Additional keys required with Caps Lock for combo action
         """
         self.callback_press = callback_press
         self.callback_release = callback_release
+        self.callback_combo = callback_combo
         self.combo_keys = set(combo_keys) if combo_keys else set()
         self.current_keys = set()
         self.listener = None
         self.running = False
         self.caps_lock_pressed = False
+        self.combo_activated = False
 
     def on_press(self, key):
         """Handle key press events"""
         try:
             # Convert key to string representation
-            key_str = key.char
+            key_str = (
+                key.char
+                if hasattr(key, "char")
+                else str(key).replace("Key.", "").lower()
+            )
         except AttributeError:
             key_str = str(key).replace("Key.", "").lower()
 
+        # Add key to currently pressed keys
         self.current_keys.add(key_str)
 
         # Check specifically for Caps Lock
         if key_str == "caps_lock":
             self.caps_lock_pressed = True
+            # Only trigger the press callback if no combo keys are being pressed
+            if not any(k in self.current_keys for k in self.combo_keys):
+                self.callback_press()
 
-            # If no combo keys are required, trigger immediately
-            if not self.combo_keys:
-                self.callback_press()
-            # If combo keys are required, check if they're all pressed
-            elif all(k in self.current_keys for k in self.combo_keys):
-                self.callback_press()
+        # Check if we have a combo activation
+        if (
+            self.caps_lock_pressed
+            and self.combo_keys
+            and all(k in self.current_keys for k in self.combo_keys)
+        ):
+            self.combo_activated = True
 
     def on_release(self, key):
         """Handle key release events"""
         try:
-            key_str = key.char
+            key_str = (
+                key.char
+                if hasattr(key, "char")
+                else str(key).replace("Key.", "").lower()
+            )
         except AttributeError:
             key_str = str(key).replace("Key.", "").lower()
 
+        # Handle Caps Lock release
         if key_str == "caps_lock":
             self.caps_lock_pressed = False
-            self.callback_release()
 
+            # If combo was activated, call the combo callback
+            if self.combo_activated:
+                self.callback_combo()
+                self.combo_activated = False
+            else:
+                # Otherwise, just a normal caps lock release
+                self.callback_release()
+
+        # Remove the released key from current keys
         if key_str in self.current_keys:
             self.current_keys.remove(key_str)
 
@@ -125,26 +151,7 @@ class AudioTranscriber:
         print(f"Sample rate: {self.sample_rate}")
 
     def calibrate_noise(self) -> None:
-        # """Calibrate the ambient noise level"""
-        # print("Calibrating ambient noise level... Please remain quiet.")
-
-        # calibration_samples = []
-        # duration = 0
-
-        # def callback(indata, frames, time, status):
-        #     if status:
-        #         print(status)
-        #     calibration_samples.append(np.abs(indata).mean())
-
-        # with sd.InputStream(
-        #     channels=self.channels,
-        #     samplerate=self.sample_rate,
-        #     blocksize=self.chunk_size,
-        #     callback=callback,
-        # ):
-        #     time.sleep(self.calibration_duration)
-
-        # samples = np.array(calibration_samples)
+        # Using fixed noise level as in original code
         self.ambient_noise_level = 0.002
         print(f"Ambient noise level calibrated: {self.ambient_noise_level:.6f}")
 
@@ -182,7 +189,7 @@ class AudioTranscriber:
         )
 
         self.stream.start()
-        print("Started recording... Press Ctrl+C to stop")
+        print("Started recording... Press Caps Lock to stop")
 
     def _resample(self, audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
         """Resample audio to target sample rate"""
@@ -194,6 +201,9 @@ class AudioTranscriber:
 
     def stop_recording(self) -> str:
         """Stop recording, process the complete audio, and return the transcription"""
+        if not self.is_running:
+            return ""
+
         self.is_running = False
 
         if hasattr(self, "stream"):
@@ -266,63 +276,71 @@ model = genai.GenerativeModel(
 
 
 def main():
-    # list_audio_devices()
-
     transcriber = AudioTranscriber(
         model_type="small",
         chunk_size=1024,
         channels=1,
-        noise_threshold=0.02,  # Adjust this value based on your environment
+        noise_threshold=0.02,
         calibration_duration=1.0,
     )
 
     chat_session = model.start_chat()
 
-    def on_caps_lock():
+    def on_caps_lock_press():
+        print("Caps Lock pressed - Starting recording...")
         transcriber.start_recording()
 
-    def off_caps_lock():
+    def on_caps_lock_release():
+        print("Caps Lock released - Processing recording...")
         transcription = transcriber.stop_recording()
-        if len(transcription) != 0:
-            response = model.generate_content(
-                [
-                    transcription,
-                ]
-            )
-            print(response.text)
+        if transcription:
+            response = chat_session.send_message(transcription)
+            print(f"AI Response: {response.text}")
         else:
-            print("False Alarm!")
+            print("No transcription available or false alarm.")
 
+    def type_transcription():
+        print("Caps Lock + A combo detected - Auto-typing transcription...")
+        text = transcriber.stop_recording()
+        if text:
+            # Give user time to focus the correct window
+            print("Focusing target window in 3 seconds...")
+            for i in range(3, 0, -1):
+                print(f"{i}...")
+                time.sleep(1)
+
+            # Type the text character by character
+            for character in text:
+                pyautogui.write(character)
+                time.sleep(0.01)  # Adjust typing speed as needed
+
+            print("Text successfully typed at cursor position.")
+        else:
+            print("No transcription available to type.")
+
+    # Set up the listener with proper callbacks
     listener = CapsLockListener(
-        callback_press=on_caps_lock, callback_release=off_caps_lock
+        callback_press=on_caps_lock_press,
+        callback_release=on_caps_lock_release,
+        callback_combo=type_transcription,
+        combo_keys=["a"],
     )
 
     try:
-        print("Listening for Caps Lock...")
-        print("Press ctrl + c to exit")
+        print("Starting key listener...")
+        print("Press Caps Lock to start recording")
+        print("Press Caps Lock + A to start recording and auto-type the transcription")
+        print("Press Ctrl+C to exit")
         listener.start()
 
+        # Keep the main thread alive
         while listener.running:
             time.sleep(0.1)
 
     except KeyboardInterrupt:
         print("\nStopping listener...")
         listener.stop()
-
-    # try:
-    #     # Show available devices
-
-    #     transcriber.start_recording()
-
-    #     # Keep running until Ctrl+C
-    #     try:
-    #         while True:
-    #             time.sleep(0.1)
-    #     except KeyboardInterrupt:
-    #         transcriber.stop_recording()
-
-    # except Exception as e:
-    #     print(f"Error: {e}")
+        print("Program terminated.")
 
 
 if __name__ == "__main__":
