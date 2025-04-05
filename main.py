@@ -1,64 +1,23 @@
 import os
 
-# Set Qt environment variables before any other imports
-os.environ["QT_PLUGIN_PATH"] = "/usr/lib/x86_64-linux-gnu/qt5/plugins"
-os.environ["QT_QPA_PLATFORM"] = "offscreen"  # Add this line too
 
 import numpy as np
 import whisper
+
 import threading
 import queue
-import time
 from typing import Optional
 import warnings
 import sounddevice as sd
 import google.generativeai as genai
 from dotenv import load_dotenv
 from pynput import keyboard
-import threading
 import time
 import pyautogui
 
 load_dotenv()
 
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-
-# import subprocess
-
-
-# def show_popup(message):
-#     # Create a temporary script
-#     script_path = "/tmp/popup_message.sh"
-
-#     with open(script_path, "w") as f:
-#         f.write("#!/bin/bash\n")
-#         f.write(f"echo '{message}'\n")
-#         f.write('echo "Press Enter to close..."\n')
-#         f.write("read\n")
-
-#     os.chmod(script_path, 0o755)
-
-#     # Use dbus-send to launch konsole
-#     subprocess.run(
-#         [
-#             "dbus-send",
-#             "--session",
-#             "--dest=org.kde.konsole",
-#             "--type=method_call",
-#             "/konsole/MainWindow_1",
-#             "org.kde.KMainWindow.activateAction",
-#             "string:new-tab",
-#         ],
-#         check=False,
-#     )
-
-#     # Now run the script in that tab
-#     subprocess.run([script_path], check=False)
-#     return True
-
-
-# # Example usage
-# # popup_terminal_message("This is an important message from Python!")
 
 
 class CapsLockListener:
@@ -338,7 +297,7 @@ def main():
         if transcription:
             response = chat_session.send_message(transcription)
             print(f"AI Response: {response.text}")
-            # show_popup(response.text)
+
         else:
             print("No transcription available or false alarm.")
 
@@ -346,11 +305,11 @@ def main():
         print("Caps Lock + A combo detected - Auto-typing transcription...")
         text = transcriber.stop_recording()
         if text:
-
             # Type the text character by character
             for character in text:
                 pyautogui.write(character)
                 time.sleep(0.01)  # Adjust typing speed as needed
+            # pyautogui.write(text, interval=0.01)
 
             print("Text successfully typed at cursor position.")
         else:
@@ -367,9 +326,8 @@ def main():
     try:
         print("Starting key listener...")
         print("Press Caps Lock to start recording")
-        print(
-            "Press Caps Lock + Shift to start recording and auto-type the transcription"
-        )
+        print("Press Caps Lock + A to start recording and auto-type the transcription")
+
         print("Press Ctrl+C to exit")
         listener.start()
 
